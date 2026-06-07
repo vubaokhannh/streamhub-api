@@ -1,0 +1,485 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["extendedWhereUnique"]
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  BLOCKED
+}
+
+enum AuthProvider {
+  GOOGLE
+}
+
+enum TokenType {
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
+  MAGIC_LINK
+  REFRESH_TOKEN
+}
+
+enum MovieType {
+  MOVIE
+  SERIES
+}
+
+enum MovieStatus {
+  DRAFT
+  PUBLISHED
+  HIDDEN
+  COMING_SOON
+}
+
+enum AgeRating {
+  P
+  K
+  T13
+  T16
+  T18
+}
+
+enum PersonRole {
+  ACTOR
+  DIRECTOR
+  WRITER
+  PRODUCER
+}
+
+enum AssetType {
+  POSTER
+  BACKDROP
+  GALLERY
+  TRAILER
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  EXPIRED
+  CANCELLED
+}
+
+enum PaymentProvider {
+  MOMO
+  VNPAY
+  STRIPE
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  REFUNDED
+}
+
+enum BannerType {
+  HOME_HERO
+  MOVIE_PROMOTION
+  PREMIUM_PROMOTION
+  ANNOUNCEMENT
+}
+
+model User {
+  id              String    @id @default(uuid())
+  email           String    @unique
+  password        String?
+  fullName        String
+  avatarUrl       String?
+  role            UserRole  @default(USER)
+  status          UserStatus @default(ACTIVE)
+  emailVerifiedAt DateTime?
+  lastLoginAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime?
+
+  providers       UserProvider[]
+  tokens          UserToken[]
+  refreshTokens   RefreshToken[]
+  devices         UserDevice[]
+  notifications   UserNotification[]
+  favorites       Favorite[]
+  ratings         Rating[]
+  comments        Comment[]
+  watchHistories  WatchHistory[]
+  subscriptions   Subscription[]
+  movieViews      MovieView[]
+  auditLogs       AuditLog[]
+}
+
+model UserProvider {
+  id             String       @id @default(uuid())
+  userId         String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider       AuthProvider
+  providerUserId String
+  createdAt      DateTime     @default(now())
+  
+  @@unique([provider, providerUserId])
+}
+
+model UserToken {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String    @unique
+  type      TokenType
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, type])
+  @@index([token])
+}
+
+model RefreshToken {
+  id              String      @id @default(uuid())
+  token           String      @unique 
+  userId          String
+  deviceId        String      
+  
+  familyId        String
+  replacedByToken String?
+  isRevoked       Boolean     @default(false) 
+  expiresAt       DateTime    
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device          UserDevice  @relation(fields: [userId, deviceId], references: [userId, deviceId], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([token])
+  @@index([familyId])
+}
+
+model UserDevice {
+  id           String    @id @default(uuid())
+  userId       String
+  deviceName   String
+  deviceId     String    
+  lastActiveAt DateTime? @default(now()) 
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  refreshTokens RefreshToken[]
+
+  @@unique([userId, deviceId])
+}
+
+model Movie {
+  id               String    @id @default(uuid())
+  title            String
+  originalTitle    String?
+  slug             String    @unique
+  description      String?
+  shortDescription String?
+  posterUrl        String?
+  backdropUrl      String?
+  trailerUrl       String?
+  
+  videoUrl         String?   
+  isEncrypted      Boolean   @default(false)
+  drmKeyId         String?
+
+  metaTitle        String?
+  metaDescription  String?
+  metaKeywords     String?
+  releaseDate      DateTime?
+  releaseYear      Int?
+  duration         Int?
+  country          String?
+  language         String?
+  ageRating        AgeRating?
+  movieType        MovieType
+  isPremium        Boolean     @default(false)
+  status           MovieStatus @default(DRAFT)
+  viewCount        BigInt      @default(0)
+  favoriteCount    BigInt      @default(0)
+  ratingAverage    Decimal     @default(0) @db.Decimal(3,2)
+  ratingCount      BigInt      @default(0)
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+  deletedAt        DateTime?
+
+  genres           MovieGenre[]
+  tags             MovieTag[]
+  people           MoviePerson[]
+  assets           MovieAsset[]
+  seasons          Season[]
+  subtitles        Subtitle[]
+  favorites        Favorite[]
+  ratings          Rating[]
+  comments         Comment[]
+  watchHistories   WatchHistory[]
+  movieViews       MovieView[]
+  banners          Banner[]
+
+  @@index([movieType])
+  @@index([status])
+  @@index([isPremium])
+}
+
+model Season {
+  id           String    @id @default(uuid())
+  movieId      String
+  seasonNumber Int
+  title        String
+  movie        Movie     @relation(fields: [movieId], references: [id], onDelete: Cascade)
+  episodes     Episode[]
+  
+  @@unique([movieId, seasonNumber])
+}
+
+model Episode {
+  id            String    @id @default(uuid())
+  seasonId      String
+  episodeNumber Int
+  title         String
+  duration      Int?      
+  
+  videoUrl      String?   
+  isEncrypted   Boolean   @default(false)
+  drmKeyId      String?
+
+  season        Season    @relation(fields: [seasonId], references: [id], onDelete: Cascade)
+  
+  subtitles      Subtitle[]
+  watchHistories WatchHistory[]
+  movieViews     MovieView[]
+  
+  @@unique([seasonId, episodeNumber])
+}
+
+model Subtitle {
+  id        String   @id @default(uuid())
+  movieId   String?
+  episodeId String?
+  language  String   
+  url       String   
+  isDefault Boolean  @default(false)
+
+  movie     Movie?   @relation(fields: [movieId], references: [id], onDelete: Cascade)
+  episode   Episode? @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+}
+
+model Genre {
+  id          String       @id @default(uuid())
+  name        String       @unique
+  slug        String       @unique
+  description String?
+  movies      MovieGenre[]
+}
+
+model MovieGenre {
+  movieId String
+  genreId String
+  movie   Movie  @relation(fields: [movieId], references: [id], onDelete: Cascade)
+  genre   Genre  @relation(fields: [genreId], references: [id], onDelete: Cascade)
+  
+  @@id([movieId, genreId])
+}
+
+model Tag {
+  id     String     @id @default(uuid())
+  name   String     @unique
+  slug   String     @unique
+  movies MovieTag[]
+}
+
+model MovieTag {
+  movieId String
+  tagId   String
+  movie   Movie  @relation(fields: [movieId], references: [id], onDelete: Cascade)
+  tag     Tag    @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  
+  @@id([movieId, tagId])
+}
+
+model Person {
+  id          String        @id @default(uuid())
+  name        String
+  englishName String?
+  avatarUrl   String?
+  nationality String?
+  biography   String?
+  movies      MoviePerson[]
+}
+
+model MoviePerson {
+  id            String     @id @default(uuid())
+  movieId       String
+  personId      String
+  role          PersonRole
+  characterName String?
+  movie         Movie      @relation(fields: [movieId], references: [id], onDelete: Cascade)
+  person        Person     @relation(fields: [personId], references: [id], onDelete: Cascade)
+}
+
+model MovieAsset {
+  id        String    @id @default(uuid())
+  movieId   String
+  assetType AssetType
+  url       String
+  movie     Movie     @relation(fields: [movieId], references: [id], onDelete: Cascade)
+}
+
+model Favorite {
+  id      String @id @default(uuid())
+  userId  String
+  movieId String
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  movie   Movie  @relation(fields: [movieId], references: [id], onDelete: Cascade)
+  
+  @@unique([userId, movieId])
+}
+
+model Rating {
+  id      String @id @default(uuid())
+  userId  String
+  movieId String
+  score   Int
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  movie   Movie  @relation(fields: [movieId], references: [id], onDelete: Cascade)
+  
+  @@unique([userId, movieId])
+}
+
+model Comment {
+  id        String    @id @default(uuid())
+  userId    String
+  movieId   String
+  parentId  String?
+  content   String
+  createdAt DateTime  @default(now())
+  
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  movie     Movie     @relation(fields: [movieId], references: [id], onDelete: Cascade)
+  parent    Comment?  @relation("CommentReplies", fields: [parentId], references: [id])
+  replies   Comment[] @relation("CommentReplies")
+
+  @@index([movieId, createdAt])
+}
+
+model WatchHistory {
+  id              String   @id @default(uuid())
+  userId          String
+  movieId         String
+  episodeId       String?
+  progressSeconds Int      @default(0)
+  completed       Boolean  @default(false)
+  updatedAt       DateTime @updatedAt
+  
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  movie           Movie    @relation(fields: [movieId], references: [id], onDelete: Cascade)
+  episode         Episode? @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+  
+  @@unique([userId, movieId, episodeId])
+}
+
+model MovieView {
+  id        String   @id @default(uuid())
+  userId    String?
+  movieId   String
+  episodeId String?
+  viewedAt  DateTime @default(now())
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  movie     Movie    @relation(fields: [movieId], references: [id], onDelete: Cascade)
+  episode   Episode? @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+}
+
+model Plan {
+  id           String         @id @default(uuid())
+  name         String
+  price        Decimal        @db.Decimal(12,2)
+  durationDays Int
+  maxDevices   Int
+  subscriptions Subscription[]
+}
+
+model Subscription {
+  id        String             @id @default(uuid())
+  userId    String
+  planId    String
+  status    SubscriptionStatus
+  startedAt DateTime
+  expiredAt DateTime
+  user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan      Plan               @relation(fields: [planId], references: [id])
+  payments  Payment[]
+}
+
+model Payment {
+  id              String          @id @default(uuid())
+  subscriptionId  String
+  provider        PaymentProvider
+  transactionCode String?         @unique
+  amount          Decimal         @db.Decimal(12,2)
+  currency        String          @default("VND") 
+  status          PaymentStatus
+  createdAt       DateTime        @default(now())
+  
+  subscription    Subscription    @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+}
+
+model Banner {
+  id         String     @id @default(uuid())
+  title      String
+  imageUrl   String
+  bannerType BannerType
+  isActive   Boolean    @default(true)
+  movieId    String?
+  startAt    DateTime?
+  endAt      DateTime?
+  
+  movie      Movie?     @relation(fields: [movieId], references: [id], onDelete: SetNull)
+}
+
+model Notification {
+  id        String             @id @default(uuid())
+  title     String
+  content   String
+  isActive  Boolean            @default(true)
+  createdAt DateTime           @default(now())
+  
+  users     UserNotification[]
+}
+
+model UserNotification {
+  id             String       @id @default(uuid())
+  userId         String
+  notificationId String
+  readAt         DateTime?
+  createdAt      DateTime     @default(now())
+
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  notification   Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  action    String
+  entity    String
+  entityId  String?
+  oldValues Json?
+  newValues Json?
+  ipAddress String?
+  userAgent String?  
+  createdAt DateTime @default(now())
+
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([entity, entityId])
+  @@index([userId])
+}
