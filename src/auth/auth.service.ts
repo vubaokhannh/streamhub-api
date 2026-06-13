@@ -1,20 +1,22 @@
 import { ConflictException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 import { ErrorMessages } from '../common/constants/error.constant';
 import { PrismaService } from '../prisma/prisma.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
+import { RefreshTokenDto } from './dto/refresh-token.dto';
+import { LogoutDto } from './dto/logout.dto';
+import { TokenService } from './token.service';
 
 @Injectable()
 export class AuthService {
   constructor(
     private prisma: PrismaService,
-    private jwtService: JwtService,
     private configService: ConfigService,
-  ) {}
+    private tokenService: TokenService,
+  ) { }
 
   async register(registerDto: RegisterDto) {
     const { email, password, fullName, deviceId, deviceName } = registerDto;
@@ -39,7 +41,7 @@ export class AuthService {
     const activeDeviceId = deviceId || crypto.randomUUID();
     const activeDeviceName = deviceName || 'Unknown Device';
 
-    const tokens = await this.generateTokensAndSave(
+    const tokens = await this.tokenService.generateTokensAndSave(
       user.id,
       user.email,
       user.role,
@@ -55,7 +57,7 @@ export class AuthService {
   }
 
   async login(loginDto: LoginDto) {
-    const { email, password, deviceId, deviceName } = loginDto;
+    const { email, password, deviceId, deviceName, rememberMe } = loginDto;
 
     const user = await this.prisma.user.findUnique({
       where: { email },
@@ -73,12 +75,13 @@ export class AuthService {
     const activeDeviceId = deviceId || crypto.randomUUID();
     const activeDeviceName = deviceName || 'Unknown Device';
 
-    const tokens = await this.generateTokensAndSave(
+    const tokens = await this.tokenService.generateTokensAndSave(
       user.id,
       user.email,
       user.role,
       activeDeviceId,
       activeDeviceName,
+      rememberMe,
     );
 
     const { password: _, ...userWithoutPassword } = user;
@@ -88,81 +91,151 @@ export class AuthService {
     };
   }
 
-  private async generateTokensAndSave(
-    userId: string,
-    email: string,
-    role: string,
-    deviceId: string,
-    deviceName: string,
-  ) {
-    const familyId = crypto.randomUUID();
+  async refresh(refreshTokenDto: RefreshTokenDto) {
+    const { refreshToken } = refreshTokenDto;
 
-    const accessToken = this.jwtService.sign(
-      { sub: userId, email, role },
-      {
-        secret: this.configService.get<string>('JWT_SECRET'),
-        expiresIn: this.configService.get<string>('JWT_EXPIRES_IN') as any,
-      },
-    );
-
-    const refreshToken = this.jwtService.sign(
-      { sub: userId, deviceId },
-      {
-        secret: this.configService.get<string>('JWT_REFRESH_SECRET'),
-        expiresIn: this.configService.get<string>('JWT_REFRESH_EXPIRES_IN') as any,
-      },
-    );
-
-    await this.prisma.userDevice.upsert({
-      where: {
-        userId_deviceId: { userId, deviceId },
-      },
-      create: {
-        userId,
-        deviceId,
-        deviceName,
-      },
-      update: {
-        deviceName,
-        lastActiveAt: new Date(),
+    const tokenRecord = await this.prisma.refreshToken.findUnique({
+      where: { token: refreshToken },
+      select: {
+        id: true,
+        token: true,
+        userId: true,
+        deviceId: true,
+        familyId: true,
+        expiresAt: true,
+        isRevoked: true,
+        replacedByToken: true,
+        user: {
+          select: {
+            id: true,
+            email: true,
+            role: true,
+            status: true,
+            deletedAt: true,
+          },
+        },
       },
     });
 
-    const expiryString = this.configService.get<string>('JWT_REFRESH_EXPIRES_IN') || '7d';
-    const expiresAt = this.getExpiryDate(expiryString);
+    if (!tokenRecord) {
+      throw new UnauthorizedException(ErrorMessages.AUTH.INVALID_REFRESH_TOKEN);
+    }
 
-    await this.prisma.refreshToken.create({
+    if (tokenRecord.replacedByToken) {
+      throw new UnauthorizedException(
+        ErrorMessages.AUTH.REFRESH_TOKEN_REUSED,
+      );
+    }
+
+    if (tokenRecord.isRevoked) {
+      throw new UnauthorizedException(
+        ErrorMessages.AUTH.REFRESH_TOKEN_REVOKED,
+      );
+    }
+
+    if (tokenRecord.expiresAt < new Date()) {
+      throw new UnauthorizedException(ErrorMessages.AUTH.REFRESH_TOKEN_EXPIRED);
+    }
+
+    const { user, deviceId, familyId } = tokenRecord;
+
+    if (!user || user.deletedAt || user.status === 'BLOCKED') {
+      throw new UnauthorizedException(ErrorMessages.AUTH.USER_BLOCKED);
+    }
+
+    const newAccessToken = this.tokenService.generateAccessToken(user.id, user.email, user.role);
+    const newRefreshToken = this.tokenService.generateRefreshToken(user.id, deviceId);
+
+    const expiryString = this.configService.get<string>('JWT_REFRESH_EXPIRES_IN') || '30d';
+    const newExpiresAt = this.tokenService.getExpiryDate(expiryString);
+
+    await this.prisma.$transaction(async (tx) => {
+      // Revoke the old refresh token atomically to prevent race conditions
+      const updateResult = await tx.refreshToken.updateMany({
+        where: {
+          id: tokenRecord.id,
+          isRevoked: false,
+        },
+        data: {
+          isRevoked: true,
+          replacedByToken: newRefreshToken,
+        },
+      });
+
+      if (updateResult.count === 0) {
+        throw new UnauthorizedException(ErrorMessages.AUTH.REFRESH_TOKEN_REUSED);
+      }
+
+      // Save the new refresh token
+      await tx.refreshToken.create({
+        data: {
+          token: newRefreshToken,
+          userId: user.id,
+          deviceId,
+          familyId,
+          expiresAt: newExpiresAt,
+        },
+      });
+
+      // Update device last activity
+      await tx.userDevice.updateMany({
+        where: {
+          userId: user.id,
+          deviceId,
+        },
+        data: {
+          lastActiveAt: new Date(),
+        },
+      });
+    });
+
+    const jwtExpiresIn = this.configService.get<string>('JWT_EXPIRES_IN') || '15m';
+    const expiresIn = this.tokenService.getExpiresInSeconds(jwtExpiresIn);
+
+    return {
+      success: true,
+      message: 'Refresh token successfully',
       data: {
+        accessToken: newAccessToken,
+        refreshToken: newRefreshToken,
+        expiresIn,
+      },
+    };
+  }
+  async logout(logoutDto: LogoutDto, userId: string) {
+    const { refreshToken } = logoutDto;
+
+    const tokenRecord = await this.prisma.refreshToken.findUnique({
+      where: {
         token: refreshToken,
-        userId,
-        deviceId,
-        familyId,
-        expiresAt,
+      },
+    });
+
+    if (!tokenRecord) {
+      throw new UnauthorizedException(
+        ErrorMessages.AUTH.INVALID_REFRESH_TOKEN,
+      );
+    }
+
+    if (tokenRecord.userId !== userId) {
+      throw new UnauthorizedException(
+        ErrorMessages.AUTH.TOKEN_OWNERSHIP_FAILED,
+      );
+    }
+
+    await this.prisma.refreshToken.updateMany({
+      where: {
+        familyId: tokenRecord.familyId,
+      },
+      data: {
+        isRevoked: true,
       },
     });
 
     return {
-      accessToken,
-      refreshToken,
+      success: true,
+      message: 'Logout successfully',
+      data: null,
     };
-  }
-
-  private getExpiryDate(expiresIn: string): Date {
-    const amount = parseInt(expiresIn, 10);
-    const unit = expiresIn.replace(amount.toString(), '').trim().toLowerCase();
-    const date = new Date();
-
-    if (unit === 'd' || unit === 'day' || unit === 'days') {
-      date.setDate(date.getDate() + amount);
-    } else if (unit === 'h' || unit === 'hour' || unit === 'hours') {
-      date.setHours(date.getHours() + amount);
-    } else if (unit === 'm' || unit === 'minute' || unit === 'minutes') {
-      date.setMinutes(date.getMinutes() + amount);
-    } else if (unit === 's' || unit === 'second' || unit === 'seconds') {
-      date.setSeconds(date.getSeconds() + amount);
-    } else {
-      date.setDate(date.getDate() + 7);
-    }
-    return date;
   }
 }
