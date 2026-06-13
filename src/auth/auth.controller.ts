@@ -47,18 +47,6 @@ export class AuthController {
     return this.authService.login(loginDto);
   }
 
-  @Get('me')
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
-  @ApiOperation({ summary: 'Get current user profile' })
-  @ApiResponse({
-    status: 200,
-    description: 'Current user profile retrieved successfully.',
-  })
-  @ApiResponse({ status: 401, description: 'Unauthorized.' })
-  getProfile(@GetUser() user: any) {
-    return user;
-  }
 
   @Post('refresh-token')
   @HttpCode(HttpStatus.OK)
