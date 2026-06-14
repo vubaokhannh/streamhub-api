@@ -22,7 +22,9 @@ import { MailService } from './mail.service';
           },
         },
         defaults: {
-          from: configService.get<string>('MAIL_FROM') || '"Movie App" <noreply@movieapp.com>',
+          from:
+            configService.get<string>('MAIL_FROM') ||
+            '"Movie App" <noreply@movieapp.com>',
         },
       }),
     }),
@@ -30,4 +32,4 @@ import { MailService } from './mail.service';
   providers: [MailService],
   exports: [MailService],
 })
-export class MailModule { }
+export class MailModule {}

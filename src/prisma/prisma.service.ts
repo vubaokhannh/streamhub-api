@@ -7,7 +7,9 @@ import { Pool } from 'pg';
 export class PrismaService extends PrismaClient implements OnModuleInit {
   constructor() {
     const pool = new Pool({
-      connectionString: process.env.DATABASE_URL || 'postgresql://postgres:123456@localhost:5432/streamhub',
+      connectionString:
+        process.env.DATABASE_URL ||
+        'postgresql://postgres:123456@localhost:5432/streamhub',
     });
     const adapter = new PrismaPg(pool);
     super({ adapter });

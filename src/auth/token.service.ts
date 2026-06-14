@@ -22,8 +22,14 @@ export class TokenService {
     );
   }
 
-  generateRefreshToken(userId: string, deviceId: string, rememberMe: boolean = false): string {
-    const expiresIn = rememberMe ? '30d' : this.configService.get<string>('JWT_REFRESH_EXPIRES_IN');
+  generateRefreshToken(
+    userId: string,
+    deviceId: string,
+    rememberMe: boolean = false,
+  ): string {
+    const expiresIn = rememberMe
+      ? '30d'
+      : this.configService.get<string>('JWT_REFRESH_EXPIRES_IN');
     return this.jwtService.sign(
       { sub: userId, deviceId, jti: crypto.randomUUID() },
       {
@@ -79,7 +85,11 @@ export class TokenService {
     const familyId = crypto.randomUUID();
 
     const accessToken = this.generateAccessToken(userId, email, role);
-    const refreshToken = this.generateRefreshToken(userId, deviceId, rememberMe);
+    const refreshToken = this.generateRefreshToken(
+      userId,
+      deviceId,
+      rememberMe,
+    );
 
     await this.prisma.userDevice.upsert({
       where: {
@@ -96,7 +106,9 @@ export class TokenService {
       },
     });
 
-    const expiryString = rememberMe ? '30d' : this.configService.get<string>('JWT_REFRESH_EXPIRES_IN') || '7d';
+    const expiryString = rememberMe
+      ? '30d'
+      : this.configService.get<string>('JWT_REFRESH_EXPIRES_IN') || '7d';
     const expiresAt = this.getExpiryDate(expiryString);
 
     await this.prisma.refreshToken.create({

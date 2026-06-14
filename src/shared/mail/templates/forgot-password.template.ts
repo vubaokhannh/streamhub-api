@@ -1,4 +1,8 @@
-export const forgotPasswordTemplate = (fullName: string, resetLink: string, expiresIn: string): string => `
+export const forgotPasswordTemplate = (
+  fullName: string,
+  resetLink: string,
+  expiresIn: string,
+): string => `
 <!DOCTYPE html>
 <html>
 <head>

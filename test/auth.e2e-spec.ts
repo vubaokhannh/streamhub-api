@@ -104,6 +104,8 @@ describe('AuthController (e2e)', () => {
       .send({ refreshToken: secondRefreshToken })
       .expect(401);
 
-    expect(refreshAfterLogoutRes.body.message).toBe('Refresh token has been revoked');
+    expect(refreshAfterLogoutRes.body.message).toBe(
+      'Refresh token has been revoked',
+    );
   });
 });

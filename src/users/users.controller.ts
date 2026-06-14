@@ -7,7 +7,14 @@ import {
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiBody,
+  ApiConsumes,
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { GetUser } from '../auth/decorators/get-user.decorator';
@@ -63,10 +70,7 @@ export class UsersController {
   })
   @ApiResponse({ status: 200, description: 'Avatar updated successfully.' })
   @UseInterceptors(
-    FileInterceptor(
-      'avatar',
-      createMulterOptions(UPLOAD_PATHS.AVATARS),
-    ),
+    FileInterceptor('avatar', createMulterOptions(UPLOAD_PATHS.AVATARS)),
   )
   updateAvatar(
     @GetUser('id') userId: string,

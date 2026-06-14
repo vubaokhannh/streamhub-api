@@ -1,9 +1,15 @@
-import { ConflictException, Injectable, UnauthorizedException, BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  UnauthorizedException,
+  BadRequestException,
+  NotFoundException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { TokenType } from '@prisma/client';
+import { TokenType, AuthProvider, User } from '@prisma/client';
 import { ErrorMessages } from '../common/constants/error.constant';
 import { SuccessMessages } from '../common/constants/success.constant';
 import { PrismaService } from '../prisma/prisma.service';
@@ -13,6 +19,7 @@ import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { LogoutDto } from './dto/logout.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
+import { GoogleTokenLoginDto } from './dto/google-token-login.dto';
 import { TokenService } from './token.service';
 import { TokenHelper } from './helpers/token.helper';
 import { SendForgotPasswordEmailEvent, MAIL_CONSTANTS } from '../shared/mail';
@@ -24,7 +31,7 @@ export class AuthService {
     private configService: ConfigService,
     private tokenService: TokenService,
     private eventEmitter: EventEmitter2,
-  ) { }
+  ) {}
 
   async register(registerDto: RegisterDto) {
     const { email, password, fullName, deviceId, deviceName } = registerDto;
@@ -57,7 +64,8 @@ export class AuthService {
       activeDeviceName,
     );
 
-    const { password: _, ...userWithoutPassword } = user;
+    const userWithoutPassword = { ...user };
+    delete (userWithoutPassword as Partial<User>).password;
     return {
       user: userWithoutPassword,
       ...tokens,
@@ -92,7 +100,8 @@ export class AuthService {
       rememberMe,
     );
 
-    const { password: _, ...userWithoutPassword } = user;
+    const userWithoutPassword = { ...user };
+    delete (userWithoutPassword as Partial<User>).password;
     return {
       user: userWithoutPassword,
       ...tokens,
@@ -130,15 +139,11 @@ export class AuthService {
     }
 
     if (tokenRecord.replacedByToken) {
-      throw new UnauthorizedException(
-        ErrorMessages.AUTH.REFRESH_TOKEN_REUSED,
-      );
+      throw new UnauthorizedException(ErrorMessages.AUTH.REFRESH_TOKEN_REUSED);
     }
 
     if (tokenRecord.isRevoked) {
-      throw new UnauthorizedException(
-        ErrorMessages.AUTH.REFRESH_TOKEN_REVOKED,
-      );
+      throw new UnauthorizedException(ErrorMessages.AUTH.REFRESH_TOKEN_REVOKED);
     }
 
     if (tokenRecord.expiresAt < new Date()) {
@@ -151,10 +156,18 @@ export class AuthService {
       throw new UnauthorizedException(ErrorMessages.AUTH.USER_BLOCKED);
     }
 
-    const newAccessToken = this.tokenService.generateAccessToken(user.id, user.email, user.role);
-    const newRefreshToken = this.tokenService.generateRefreshToken(user.id, deviceId);
+    const newAccessToken = this.tokenService.generateAccessToken(
+      user.id,
+      user.email,
+      user.role,
+    );
+    const newRefreshToken = this.tokenService.generateRefreshToken(
+      user.id,
+      deviceId,
+    );
 
-    const expiryString = this.configService.get<string>('JWT_REFRESH_EXPIRES_IN') || '30d';
+    const expiryString =
+      this.configService.get<string>('JWT_REFRESH_EXPIRES_IN') || '30d';
     const newExpiresAt = this.tokenService.getExpiryDate(expiryString);
 
     await this.prisma.$transaction(async (tx) => {
@@ -171,7 +184,9 @@ export class AuthService {
       });
 
       if (updateResult.count === 0) {
-        throw new UnauthorizedException(ErrorMessages.AUTH.REFRESH_TOKEN_REUSED);
+        throw new UnauthorizedException(
+          ErrorMessages.AUTH.REFRESH_TOKEN_REUSED,
+        );
       }
 
       // Save the new refresh token
@@ -197,7 +212,8 @@ export class AuthService {
       });
     });
 
-    const jwtExpiresIn = this.configService.get<string>('JWT_EXPIRES_IN') || '15m';
+    const jwtExpiresIn =
+      this.configService.get<string>('JWT_EXPIRES_IN') || '15m';
     const expiresIn = this.tokenService.getExpiresInSeconds(jwtExpiresIn);
 
     return {
@@ -220,9 +236,7 @@ export class AuthService {
     });
 
     if (!tokenRecord) {
-      throw new UnauthorizedException(
-        ErrorMessages.AUTH.INVALID_REFRESH_TOKEN,
-      );
+      throw new UnauthorizedException(ErrorMessages.AUTH.INVALID_REFRESH_TOKEN);
     }
 
     if (tokenRecord.userId !== userId) {
@@ -262,8 +276,10 @@ export class AuthService {
       const resetToken = TokenHelper.generateToken();
       const hashedToken = TokenHelper.hashToken(resetToken);
 
-      const rawExpiresIn = this.configService.get<string>('RESET_PASSWORD_EXPIRES_IN') || '15m';
-      const expiresInSeconds = this.tokenService.getExpiresInSeconds(rawExpiresIn);
+      const rawExpiresIn =
+        this.configService.get<string>('RESET_PASSWORD_EXPIRES_IN') || '15m';
+      const expiresInSeconds =
+        this.tokenService.getExpiresInSeconds(rawExpiresIn);
       const expiresAt = new Date(Date.now() + expiresInSeconds * 1000);
 
       await this.prisma.userToken.create({
@@ -275,17 +291,27 @@ export class AuthService {
         },
       });
 
-      const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000';
+      const frontendUrl =
+        this.configService.get<string>('FRONTEND_URL') ||
+        'http://localhost:5173';
       const resetLink = `${frontendUrl}/reset-password?token=${resetToken}`;
-      
+
       let displayExpiresIn = rawExpiresIn;
-      if (rawExpiresIn.endsWith('m')) displayExpiresIn = rawExpiresIn.replace('m', ' minutes');
-      else if (rawExpiresIn.endsWith('h')) displayExpiresIn = rawExpiresIn.replace('h', ' hours');
-      else if (rawExpiresIn.endsWith('d')) displayExpiresIn = rawExpiresIn.replace('d', ' days');
+      if (rawExpiresIn.endsWith('m'))
+        displayExpiresIn = rawExpiresIn.replace('m', ' minutes');
+      else if (rawExpiresIn.endsWith('h'))
+        displayExpiresIn = rawExpiresIn.replace('h', ' hours');
+      else if (rawExpiresIn.endsWith('d'))
+        displayExpiresIn = rawExpiresIn.replace('d', ' days');
 
       this.eventEmitter.emit(
         MAIL_CONSTANTS.EVENTS.FORGOT_PASSWORD,
-        new SendForgotPasswordEmailEvent(user.email, user.fullName, resetLink, displayExpiresIn),
+        new SendForgotPasswordEmailEvent(
+          user.email,
+          user.fullName,
+          resetLink,
+          displayExpiresIn,
+        ),
       );
     }
 
@@ -357,6 +383,177 @@ export class AuthService {
     return {
       success: true,
       message: SuccessMessages.AUTH.RESET_PASSWORD_SUCCESS,
+    };
+  }
+
+  async validateGoogleUser(googleUser: {
+    googleId: string;
+    email: string;
+    fullName: string;
+    picture?: string;
+  }) {
+    const { googleId, email, fullName, picture } = googleUser;
+
+    if (!email) {
+      throw new BadRequestException('Email is required from Google profile');
+    }
+
+    // 1. Find existing provider link
+    const userProvider = await this.prisma.userProvider.findUnique({
+      where: {
+        provider_providerUserId: {
+          provider: AuthProvider.GOOGLE,
+          providerUserId: googleId,
+        },
+      },
+      include: { user: true },
+    });
+
+    let user: User | null = null;
+
+    if (userProvider) {
+      user = userProvider.user;
+    } else {
+      // 2. If no provider link, check if user exists with the same email
+      user = await this.prisma.user.findUnique({
+        where: { email },
+      });
+
+      if (!user) {
+        // Create a new user
+        user = await this.prisma.user.create({
+          data: {
+            email,
+            fullName,
+            avatarUrl: picture,
+            emailVerifiedAt: new Date(),
+          },
+        });
+      }
+
+      // 3. Link Google AuthProvider to the user
+      await this.prisma.userProvider.create({
+        data: {
+          userId: user.id,
+          provider: AuthProvider.GOOGLE,
+          providerUserId: googleId,
+        },
+      });
+    }
+
+    if (!user || user.status === 'BLOCKED' || user.deletedAt) {
+      return null;
+    }
+
+    // Update last login timestamp
+    user = await this.prisma.user.update({
+      where: { id: user.id },
+      data: { lastLoginAt: new Date() },
+    });
+
+    return user;
+  }
+
+  async loginWithGoogle(googleUser: {
+    googleId: string;
+    email: string;
+    fullName: string;
+    picture?: string;
+  }) {
+    const user = await this.validateGoogleUser(googleUser);
+    if (!user) {
+      throw new UnauthorizedException(ErrorMessages.AUTH.USER_BLOCKED);
+    }
+
+    const deviceId = crypto.randomUUID();
+    const deviceName = 'Google OAuth Redirect';
+
+    const tokens = await this.tokenService.generateTokensAndSave(
+      user.id,
+      user.email,
+      user.role,
+      deviceId,
+      deviceName,
+    );
+
+    return tokens;
+  }
+
+  async verifyGoogleToken(idToken: string): Promise<{
+    googleId: string;
+    email: string;
+    fullName: string;
+    picture?: string;
+  }> {
+    try {
+      const response = await fetch(
+        `https://oauth2.googleapis.com/tokeninfo?id_token=${idToken}`,
+      );
+      if (!response.ok) {
+        throw new UnauthorizedException('Invalid Google ID Token');
+      }
+
+      interface GoogleTokenInfo {
+        sub: string;
+        email: string;
+        name?: string;
+        given_name?: string;
+        family_name?: string;
+        picture?: string;
+        aud: string;
+        azp?: string;
+      }
+
+      const payload = (await response.json()) as GoogleTokenInfo;
+
+      const clientId = this.configService.get<string>('GOOGLE_CLIENT_ID');
+      if (clientId && payload.aud !== clientId && payload.azp !== clientId) {
+        throw new UnauthorizedException('Token client ID mismatch');
+      }
+
+      return {
+        googleId: payload.sub,
+        email: payload.email,
+        fullName:
+          payload.name ||
+          `${payload.given_name || ''} ${payload.family_name || ''}`.trim(),
+        picture: payload.picture,
+      };
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Failed to verify Google ID Token';
+      throw new UnauthorizedException(message);
+    }
+  }
+
+  async googleTokenLogin(dto: GoogleTokenLoginDto) {
+    const { idToken, deviceId, deviceName } = dto;
+    const googleProfile = await this.verifyGoogleToken(idToken);
+
+    const user = await this.validateGoogleUser(googleProfile);
+    if (!user) {
+      throw new UnauthorizedException(ErrorMessages.AUTH.USER_BLOCKED);
+    }
+
+    const activeDeviceId = deviceId || crypto.randomUUID();
+    const activeDeviceName = deviceName || 'Google Token Login';
+
+    const tokens = await this.tokenService.generateTokensAndSave(
+      user.id,
+      user.email,
+      user.role,
+      activeDeviceId,
+      activeDeviceName,
+    );
+
+    const userWithoutPassword = { ...user };
+    delete (userWithoutPassword as Partial<User>).password;
+
+    return {
+      user: userWithoutPassword,
+      ...tokens,
     };
   }
 }
