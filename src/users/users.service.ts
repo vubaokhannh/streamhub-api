@@ -5,6 +5,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { ErrorMessages } from '../common/constants/error.constant';
+import { SuccessMessages } from '../common/constants/success.constant';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { deleteFile } from '../shared/upload';
 
@@ -48,7 +50,7 @@ export class UsersService {
 
     return {
       success: true,
-      message: 'Profile updated successfully',
+      message: SuccessMessages.USER.PROFILE_UPDATED,
       data: updatedUser,
     };
   }
@@ -84,7 +86,7 @@ export class UsersService {
 
     return {
       success: true,
-      message: 'Avatar updated successfully',
+      message: SuccessMessages.USER.AVATAR_UPDATED,
       data: updatedUser,
     };
   }

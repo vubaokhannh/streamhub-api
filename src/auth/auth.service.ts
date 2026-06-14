@@ -1,14 +1,21 @@
-import { ConflictException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { ConflictException, Injectable, UnauthorizedException, BadRequestException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
+import { EventEmitter2 } from '@nestjs/event-emitter';
+import { TokenType } from '@prisma/client';
 import { ErrorMessages } from '../common/constants/error.constant';
+import { SuccessMessages } from '../common/constants/success.constant';
 import { PrismaService } from '../prisma/prisma.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { LogoutDto } from './dto/logout.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 import { TokenService } from './token.service';
+import { TokenHelper } from './helpers/token.helper';
+import { SendForgotPasswordEmailEvent, MAIL_CONSTANTS } from '../shared/mail';
 
 @Injectable()
 export class AuthService {
@@ -16,6 +23,7 @@ export class AuthService {
     private prisma: PrismaService,
     private configService: ConfigService,
     private tokenService: TokenService,
+    private eventEmitter: EventEmitter2,
   ) { }
 
   async register(registerDto: RegisterDto) {
@@ -194,7 +202,7 @@ export class AuthService {
 
     return {
       success: true,
-      message: 'Refresh token successfully',
+      message: SuccessMessages.AUTH.REFRESH_TOKEN,
       data: {
         accessToken: newAccessToken,
         refreshToken: newRefreshToken,
@@ -234,8 +242,121 @@ export class AuthService {
 
     return {
       success: true,
-      message: 'Logout successfully',
-      data: null,
+      message: SuccessMessages.AUTH.LOGOUT,
+    };
+  }
+
+  async forgotPassword(dto: ForgotPasswordDto) {
+    const { email } = dto;
+    const user = await this.prisma.user.findUnique({ where: { email } });
+
+    if (user && !user.deletedAt) {
+      await this.prisma.userToken.deleteMany({
+        where: {
+          userId: user.id,
+          type: TokenType.PASSWORD_RESET,
+          usedAt: null,
+        },
+      });
+
+      const resetToken = TokenHelper.generateToken();
+      const hashedToken = TokenHelper.hashToken(resetToken);
+
+      const rawExpiresIn = this.configService.get<string>('RESET_PASSWORD_EXPIRES_IN') || '15m';
+      const expiresInSeconds = this.tokenService.getExpiresInSeconds(rawExpiresIn);
+      const expiresAt = new Date(Date.now() + expiresInSeconds * 1000);
+
+      await this.prisma.userToken.create({
+        data: {
+          userId: user.id,
+          token: hashedToken,
+          type: TokenType.PASSWORD_RESET,
+          expiresAt,
+        },
+      });
+
+      const frontendUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000';
+      const resetLink = `${frontendUrl}/reset-password?token=${resetToken}`;
+      
+      let displayExpiresIn = rawExpiresIn;
+      if (rawExpiresIn.endsWith('m')) displayExpiresIn = rawExpiresIn.replace('m', ' minutes');
+      else if (rawExpiresIn.endsWith('h')) displayExpiresIn = rawExpiresIn.replace('h', ' hours');
+      else if (rawExpiresIn.endsWith('d')) displayExpiresIn = rawExpiresIn.replace('d', ' days');
+
+      this.eventEmitter.emit(
+        MAIL_CONSTANTS.EVENTS.FORGOT_PASSWORD,
+        new SendForgotPasswordEmailEvent(user.email, user.fullName, resetLink, displayExpiresIn),
+      );
+    }
+
+    return {
+      success: true,
+      message: SuccessMessages.AUTH.FORGOT_PASSWORD_SENT,
+    };
+  }
+
+  async resetPassword(dto: ResetPasswordDto) {
+    const hashedToken = TokenHelper.hashToken(dto.token);
+
+    const userToken = await this.prisma.userToken.findFirst({
+      where: {
+        token: hashedToken,
+        type: TokenType.PASSWORD_RESET,
+        usedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+      include: { user: true },
+    });
+
+    if (!userToken) {
+      throw new BadRequestException('Invalid or expired reset token');
+    }
+
+    const { user } = userToken;
+
+    if (!user || user.deletedAt) {
+      throw new NotFoundException('User not found');
+    }
+
+    const hashedPassword = await bcrypt.hash(dto.password, 10);
+
+    await this.prisma.$transaction(async (tx) => {
+      // Update password
+      await tx.user.update({
+        where: { id: user.id },
+        data: { password: hashedPassword },
+      });
+
+      // Mark token as used
+      await tx.userToken.update({
+        where: { id: userToken.id },
+        data: { usedAt: new Date() },
+      });
+
+      // Delete other unused reset tokens
+      await tx.userToken.deleteMany({
+        where: {
+          userId: user.id,
+          type: TokenType.PASSWORD_RESET,
+          usedAt: null,
+        },
+      });
+
+      // Revoke all refresh tokens
+      await tx.refreshToken.updateMany({
+        where: { userId: user.id },
+        data: { isRevoked: true },
+      });
+
+      // Delete all devices
+      await tx.userDevice.deleteMany({
+        where: { userId: user.id },
+      });
+    });
+
+    return {
+      success: true,
+      message: SuccessMessages.AUTH.RESET_PASSWORD_SUCCESS,
     };
   }
 }
